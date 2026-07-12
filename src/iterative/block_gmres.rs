@@ -14,9 +14,13 @@
 //!     H_{i,j} = Vᵢᴴ · W               // k×k block
 //!     W -= Vᵢ · H_{i,j}
 //!   QR → V_{j+1} · H_{j+1,j}          // thin QR
-//!   check per-column convergence
+//!   (per-column convergence check deferred to outer loop)
 //! X = X₀ + [V₀ … Vₘ₋₁] · Y            // Y = solution of block LS
 //! ```
+//!
+//! Note: Per-column deflation during the Arnoldi process (early convergence)
+//! is not yet implemented. Each restart cycle builds the full m-step subspace,
+//! then convergence is checked after the block LS solve in the outer loop.
 //!
 //! Reference: Saad (2003) §6.12, Vital (1997).
 
@@ -165,20 +169,10 @@ impl<T: Scalar> BlockGmres<T> {
                 mgs_block(&mut v_next, &mut h_next, k, n, eps);
                 h_subdiag.push(h_next.clone());
 
-                // ── Check convergence ──
-                let hrows = H_rows.len(); // = steps_this_outer + 1
-                if let Some(y_mat) = solve_block_ls(&H_rows, &g_rows, &h_next, hrows, k, eps) {
-                    for j in 0..k {
-                        if converged[j] { continue; }
-                        // Column j of Y is stacked in y_mat: [col 0, col 1, ..., col k-1] interleaved
-                        // y_mat[ci * k + bi + j * k] gives the coordinate for V[ci][bi] for RHS j
-                        // Wait — need to restructure. y_mat here is the LS solution shaped as:
-                        // ncols*k × k flat matrix where y_mat[row * k + col] is the coordinate.
-                        // Actually our solve_block_ls returns y_mat as &[Complex<T>] of length ncols*k*k
-                        // stored as y_mat[(block_step * k + row_in_block) * k + col_rhs]
-                    }
-                }
-
+                // ── Check convergence (deferred to outer loop) ──
+                // Per-column convergence during Arnoldi (early deflation)
+                // is not yet implemented.  The outer loop recomputes residuals
+                // and marks converged columns after each restart cycle.
                 steps_this_outer += 1;
                 total_block_steps += 1;
 
@@ -263,7 +257,6 @@ fn mgs_block<T: Scalar>(
     _n: usize,
     eps: T,
 ) {
-    let zero_c = Complex::new(T::zero(), T::zero());
     for j in 0..k {
         for i in 0..j {
             let d = v[i].dot(&v[j]);
@@ -279,34 +272,7 @@ fn mgs_block<T: Scalar>(
     }
 }
 
-// ─── Block least-squares: for convergence check (single-shot) ────────────────
-
-/// Build and solve the block least-squares problem for the given block step,
-/// returns Y as a flat matrix (ncols_ls × k) where entry Y[row * k + col]...
-/// Actually returns as &[Complex<T>] with length ncols*k*1 for now (single RHS).
-#[allow(dead_code)]
-fn solve_block_ls<T: Scalar>(
-    H_rows: &[Vec<Vec<Complex<T>>>],
-    g_rows: &[Vec<Complex<T>>],
-    _h_next: &[Complex<T>],
-    _nrows_ls: usize,
-    k: usize,
-    eps: T,
-) -> Option<Vec<Complex<T>>> {
-    // Placeholder — full solve done in solve_block_ls_full
-    let ncols = H_rows.len();
-    if ncols == 0 { return None; }
-    let nrows = ncols + 1;
-    let ls_m = nrows * k;
-    let ls_n = ncols * k;
-    let zero_c = Complex::new(T::zero(), T::zero());
-    let mut A = vec![zero_c; ls_m * ls_n];
-    let mut b = vec![zero_c; ls_m];
-    fill_ls_system(&mut A, &mut b, H_rows, g_rows, ncols, k, &vec![zero_c; k * k]);
-    solve_dense_ls(&mut A, &mut b, ls_m, ls_n, eps) // single RHS
-}
-
-/// Full multi-RHS block least-squares solve.
+// ─── Full multi-RHS block least-squares solve.
 /// Returns Y as flat array of length ncols * k * k, stored as:
 ///   Y[(col_block * k + row_in_block) * k + rhs_col]
 fn solve_block_ls_full<T: Scalar>(
@@ -426,55 +392,6 @@ fn apply_qty_backsub<T: Scalar>(
         y[i] = if diag > eps { s / R[i * n + i] } else { zero_c };
     }
     Some(y)
-}
-
-/// Fill A and b for the least-squares system.
-#[allow(dead_code)]
-fn fill_ls_system<T: Scalar>(
-    A_ls: &mut [Complex<T>],
-    _b_ls: &mut [Complex<T>],
-    H_rows: &[Vec<Vec<Complex<T>>>],
-    _g_rows: &[Vec<Complex<T>>],
-    ncols: usize,
-    k: usize,
-    h_next: &[Complex<T>],
-) {
-    let nrows = ncols + 1;
-    let ls_n = ncols * k;
-    for ri in 0..nrows {
-        for ci in 0..ncols {
-            let use_block = if ri < nrows - 1 && ci < H_rows.len() {
-                ri < H_rows[ci].len()
-            } else {
-                ri == nrows - 1 && ci == ncols - 1
-            };
-            if use_block {
-                let block = if ri < nrows - 1 {
-                    &H_rows[ci][ri]
-                } else {
-                    h_next
-                };
-                for bi in 0..k {
-                    for bj in 0..k {
-                        A_ls[(ri * k + bi) * ls_n + (ci * k + bj)] = block[bi * k + bj];
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Single RHS dense LS (kept for convergence checking).
-fn solve_dense_ls<T: Scalar>(
-    A: &mut [Complex<T>],
-    b: &mut [Complex<T>],
-    m: usize,
-    n: usize,
-    eps: T,
-) -> Option<Vec<Complex<T>>> {
-    let mut R = vec![Complex::new(T::zero(), T::zero()); n * n];
-    mgs_qr(A, &mut R, m, n, eps)?;
-    apply_qty_backsub(A, &R, b, m, n, eps)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

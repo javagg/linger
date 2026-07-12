@@ -1,24 +1,25 @@
-//! Conjugate Gradient solver for complex-symmetric systems.
+//! Conjugate Orthogonal Conjugate Gradient (COCG) solver for complex-symmetric systems.
 //!
 //! Solves `A x = b` where `A` is a `LinearOperator` over `Complex<T>`.
-//! For EFIE matrices that are symmetric (Z_ij = Z_ji), standard CG with
-//! the Hermitian inner product ⟨u,v⟩ = Σ conj(uᵢ)·vᵢ converges robustly.
+//! For EFIE impedance matrices Z = Z^T (complex symmetric, NOT Hermitian),
+//! uses the bilinear (non-conjugate) inner product ⟨u,v⟩ = Σ uᵢ·vᵢ.
 //!
 //! Storage: O(N) — only 5 vectors (r, z, p, Ap, Ax).
 //!
-//! # Algorithm
+//! # Algorithm (COCG, van der Vorst & Melissen 1990)
 //! ```text
 //! r₀ = b − A x₀,  z₀ = M⁻¹ r₀,  p₀ = z₀
 //! for k = 0, 1, …:
-//!     α_k  = ⟨r_k, z_k⟩ / ⟨p_k, A p_k⟩
+//!     α_k  = ⟨r_k, z_k⟩_B / ⟨p_k, A p_k⟩_B
 //!     x_{k+1} = x_k + α_k p_k
 //!     r_{k+1} = r_k − α_k A p_k
 //!     z_{k+1} = M⁻¹ r_{k+1}
-//!     β_k  = ⟨r_{k+1}, z_{k+1}⟩ / ⟨r_k, z_k⟩
+//!     β_k  = ⟨r_{k+1}, z_{k+1}⟩_B / ⟨r_k, z_k⟩_B
 //!     p_{k+1} = z_{k+1} + β_k p_k
+//!     where ⟨u,v⟩_B = Σ uᵢ·vᵢ  (bilinear, no conj)
 //! ```
 //!
-//! References: Hestenes & Stiefel (1952), Saad §6.7.
+//! References: van der Vorst & Melissen (1990), Hestenes & Stiefel (1952), Saad §6.7.
 
 use crate::core::{
     operator::LinearOperator,
@@ -76,9 +77,10 @@ impl<T: Scalar> ComplexCgWorkspace<T> {
     }
 }
 
-/// Conjugate Gradient solver for complex-symmetric linear systems.
+/// COCG solver for complex-symmetric linear systems.
 ///
-/// Suitable when the matrix `A` is symmetric (EFIE-type).  Storage O(N).
+/// Suitable when the matrix `A` is complex symmetric (Z = Z^T, EFIE-type).
+/// Uses bilinear (non-conjugate) inner product: ⟨u,v⟩ = Σ uᵢ·vᵢ.
 /// For non-symmetric systems use [`ComplexGmres`][super::ComplexGmres].
 pub struct ComplexCg<T> {
     /// How often to recompute the residual from scratch (default 50).
@@ -141,14 +143,14 @@ impl<T: Scalar> ComplexCg<T> {
         }
         workspace.p.copy_from(&workspace.z);
 
-        let mut rz = hermitian_dot(workspace.r.as_slice(), workspace.z.as_slice());
+        let mut rz = bilinear_dot(workspace.r.as_slice(), workspace.z.as_slice());
 
         for k in 0..max_iter {
             // A·p
             op.apply(&workspace.p, &mut workspace.ap);
 
             // α = ⟨r,z⟩ / ⟨p,Ap⟩
-            let pap = hermitian_dot(workspace.p.as_slice(), workspace.ap.as_slice());
+            let pap = bilinear_dot(workspace.p.as_slice(), workspace.ap.as_slice());
 
             let r_norm = workspace.r.norm2();  // T — L2 norm of current residual
             let res_now = to_f64(r_norm / norm_b_f);
@@ -195,7 +197,7 @@ impl<T: Scalar> ComplexCg<T> {
                 None => workspace.z.copy_from(&workspace.r),
             }
 
-            let rz_new = hermitian_dot(workspace.r.as_slice(), workspace.z.as_slice());
+            let rz_new = bilinear_dot(workspace.r.as_slice(), workspace.z.as_slice());
 
             let beta = rz_new / rz;
             // p = z + β·p
@@ -210,10 +212,14 @@ impl<T: Scalar> ComplexCg<T> {
     }
 }
 
-/// Hermitian inner product: ⟨u,v⟩ = Σ conj(uᵢ)·vᵢ
-fn hermitian_dot<T: Scalar>(u: &[Complex<T>], v: &[Complex<T>]) -> Complex<T> {
+/// Bilinear (non-conjugate) inner product: ⟨u,v⟩ = Σ uᵢ·vᵢ
+///
+/// For complex-symmetric matrices A = A^T (EFIE-type), the bilinear inner
+/// product guarantees ⟨p,Ap⟩ is real when A is complex symmetric, which is
+/// required for COCG convergence (van der Vorst & Melissen, 1990).
+fn bilinear_dot<T: Scalar>(u: &[Complex<T>], v: &[Complex<T>]) -> Complex<T> {
     u.iter().zip(v.iter()).fold(Complex::new(T::zero(), T::zero()), |acc, (u_i, v_i)| {
-        acc + u_i.conj() * v_i
+        acc + *u_i * *v_i
     })
 }
 
