@@ -315,7 +315,7 @@ impl<T: Scalar> ComplexGmres<T> {
 ///
 /// Derivation: from `-conj(s)*a + c*b = 0` → `s = (a/|a|) * conj(b) / r`.
 #[inline]
-fn complex_givens<T: Scalar>(a: Complex<T>, b: Complex<T>) -> (T, Complex<T>) {
+pub fn complex_givens<T: Scalar>(a: Complex<T>, b: Complex<T>) -> (T, Complex<T>) {
     let norm_a = a.norm();
     let norm_b = b.norm();
     let zero = T::zero();

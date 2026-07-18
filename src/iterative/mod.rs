@@ -1,3 +1,4 @@
+pub mod complex_lgmres;
 pub mod cg;
 pub mod gmres;
 pub mod bicgstab;
