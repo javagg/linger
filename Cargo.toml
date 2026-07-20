@@ -13,7 +13,7 @@ mpi     = ["dep:mpi"]                # distributed memory via Open MPI (rsmpi 0.
 mumps   = []                         # compatibility flag for native linger multifrontal MUMPS-style entrypoint
 mkl     = []                         # compatibility flag for native linger multifrontal MKL-style entrypoint
 wasm    = ["dep:wasm-bindgen", "dep:console_error_panic_hook"]
-__native = []                        # internal: gates native-only examples (nalgebra etc.)
+__native = []
 hypre-rs = []                        # external solver interface gate
 petsc-rs = []                        # external solver interface gate
 

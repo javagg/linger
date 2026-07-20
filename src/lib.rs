@@ -106,3 +106,4 @@ pub use crate::builder::{
     ExternalBackend, BackendCapabilities, EffectiveBackend, BackendSelectionReport,
     solve_auto,
 };
+pub mod rational_fit;
