@@ -96,7 +96,7 @@ pub use crate::eigen::{
 
 pub use crate::direct::{
     DirectSolver, DirectOptions, DirectSolverPrecond,
-    SparseLu, SupernodalSparseLu, SparseCholesky, SupernodalSparseCholesky, SparseLdlt, MultifrontalLu, MultifrontalOptions, MumpsSolver, MklSolver,
+    SparseLu, DenseLu, SupernodalSparseLu, SparseCholesky, SupernodalSparseCholesky, SparseLdlt, MultifrontalLu, MultifrontalOptions, MumpsSolver, MklSolver,
     ordering::{OrderingMethod, rcm, colamd, nd},
 };
 

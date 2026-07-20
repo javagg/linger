@@ -41,61 +41,104 @@ impl<T: ComplexScalar> IlukPrecond<T> {
                 reason: "ILU(k) requires a square matrix".into(),
             });
         }
-        let rp = mat.row_ptr(); let ci = mat.col_idx(); let vs = mat.values();
-        let mut rows: Vec<HashMap<usize, (T, usize)>> = (0..n)
-            .map(|i| { let mut m = HashMap::new(); for k in rp[i]..rp[i+1] { m.insert(ci[k], (vs[k], 0)); } m })
+
+        let rp = mat.row_ptr();
+        let ci = mat.col_idx();
+        let vs = mat.values();
+
+        // ── Symbolic phase ────────────────────────────────────────────────────
+        // levels[i]: col → fill-level for entries in row i
+        let mut levels: Vec<HashMap<usize, usize>> = (0..n)
+            .map(|i| {
+                let mut m = HashMap::new();
+                for k in rp[i]..rp[i + 1] {
+                    m.insert(ci[k], 0usize);
+                }
+                m
+            })
             .collect();
-        for i in 0..n { rows[i].entry(i).or_insert((T::zero(), 0)); }
-        let mut col_to_rows: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for i in 0..n { for (&j, _) in &rows[i] { col_to_rows[j].push(i); } }
-        let mut visited = vec![false; n];
-        let mut cols_k_buf: Vec<(usize, T, usize)> = Vec::new();
-        let tol = T::machine_epsilon() * <T::Real as Scalar>::from_f64(1e6);
-        for k in 0..n {
-            let ukk = match rows[k].get(&k) { Some(&(v, _)) => v, None => continue, };
-            if ukk.abs() < tol { continue; }
-            let mut candidates: Vec<usize> = Vec::new();
-            for &i in &col_to_rows[k] { if i > k && !visited[i] { visited[i] = true; candidates.push(i); } }
-            for &i in &candidates { visited[i] = false; }
-            cols_k_buf.clear();
-            cols_k_buf.extend(rows[k].iter().filter(|(&j,_)| j>k).map(|(&j,&(v,lev))| (j,v,lev)));
-            for &i in &candidates {
-                if let Some(&(aik_val, lik_lev)) = rows[i].get(&k) {
-                    if aik_val.abs() < tol { continue; }
-                    let lik = aik_val / ukk;
-                    rows[i].insert(k, (lik, lik_lev));
-                    for &(j, ukj_val, ukj_lev) in &cols_k_buf {
-                        if ukj_val.abs() < tol { continue; }
-                        let new_lev = if ukj_lev == usize::MAX { usize::MAX } else { lik_lev.saturating_add(ukj_lev).saturating_add(1) };
-                        if new_lev <= fill_level {
-                            let is_new = !rows[i].contains_key(&j);
-                            let entry = rows[i].entry(j).or_insert((T::zero(), new_lev));
-                            entry.0 -= lik * ukj_val;
-                            entry.1 = entry.1.min(new_lev);
-                            if is_new { col_to_rows[j].push(i); }
+
+        for i in 1..n {
+            // collect lower-triangle pivots (k < i) present in row i
+            let pivots: Vec<(usize, usize)> =
+                levels[i].range(..i).map(|(&k, &lv)| (k, lv)).collect();
+
+            for (k, lev_ik) in pivots {
+                if lev_ik >= fill_level {
+                    continue;
+                }
+                // propagate fill from row k's upper part into row i
+                let k_upper: Vec<(usize, usize)> =
+                    levels[k].range((k + 1)..).map(|(&j, &lv)| (j, lv)).collect();
+                for (j, lev_kj) in k_upper {
+                    let new_lev = lev_ik + lev_kj + 1;
+                    if new_lev <= fill_level {
+                        let e = levels[i].entry(j).or_insert(new_lev);
+                        if new_lev < *e {
+                            *e = new_lev;
                         }
                     }
                 }
             }
         }
+
+        // ── Build extended CSR from symbolic pattern ───────────────────────
         let mut new_rp = vec![0usize; n + 1];
-        for i in 0..n { new_rp[i+1] = new_rp[i] + rows[i].len(); }
-        let nnz = new_rp[n];
-        let mut new_ci = Vec::with_capacity(nnz);
-        let mut lu_val = Vec::with_capacity(nnz);
-        let mut diag_pos = vec![0usize; n];
         for i in 0..n {
-            let keys: Vec<&usize> = rows[i].keys().collect();
-            let mut sk: Vec<usize> = keys.into_iter().copied().collect();
-            sk.sort_unstable();
-            let mut found = false;
-            for &j in &sk {
-                let p = new_ci.len();
-                if j == i { diag_pos[i] = p; found = true; }
-                new_ci.push(j); lu_val.push(rows[i][&j].0);
-            }
-            if !found { return Err(SolverError::PrecondSetupFailed { reason: format!("ILU(k): missing diagonal at row {i}") }); }
+            new_rp[i + 1] = new_rp[i] + levels[i].len();
         }
+        let nnz = new_rp[n];
+        let mut new_ci  = Vec::with_capacity(nnz);
+        let mut lu_val  = Vec::with_capacity(nnz);
+        let mut diag_pos = vec![0usize; n];
+
+        for i in 0..n {
+            let mut found = false;
+            for &j in levels[i].keys() {
+                let pos = new_ci.len();
+                if j == i {
+                    diag_pos[i] = pos;
+                    found = true;
+                }
+                new_ci.push(j);
+                lu_val.push(orig_val(rp, ci, vs, i, j));
+            }
+            if !found {
+                return Err(SolverError::PrecondSetupFailed {
+                    reason: format!("ILU(k): missing diagonal at row {i}"),
+                });
+            }
+        }
+
+        // ── Numeric phase: ILU factorisation on extended pattern ──────────
+        let tol = T::machine_epsilon() * <T::Real as Scalar>::from_f64(1e6);
+        for i in 1..n {
+            let i_start = new_rp[i];
+            let i_end   = new_rp[i + 1];
+
+            for pos_ik in i_start..i_end {
+                let k = new_ci[pos_ik];
+                if k >= i {
+                    break;
+                }
+                let u_kk = lu_val[diag_pos[k]];
+                if u_kk.abs() < tol {
+                    return Err(SolverError::SingularMatrix { row: k });
+                }
+                let factor = lu_val[pos_ik] / u_kk;
+                lu_val[pos_ik] = factor;
+
+                let k_end = new_rp[k + 1];
+                for pos_kj in (diag_pos[k] + 1)..k_end {
+                    let j = new_ci[pos_kj];
+                    if let Some(pos_ij) = find_in_row(&new_ci, i_start, i_end, j) {
+                        let v = lu_val[pos_kj];
+                        lu_val[pos_ij] -= factor * v;
+                    }
+                }
+            }
+        }
+
         Ok(IlukPrecond { nrows: n, row_ptr: new_rp, col_idx: new_ci, lu_val, diag_pos })
     }
 }

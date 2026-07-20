@@ -39,6 +39,8 @@ pub mod ordering;
 pub mod etree;
 pub mod symbolic;
 pub mod blr;
+pub mod dense_lu;
+pub use self::dense_lu::DenseLu;
 mod triangular;
 mod lu;
 mod lu_sn;

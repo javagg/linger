@@ -193,6 +193,11 @@ impl<T: ComplexScalar> CsrMatrix<T> {
     pub fn col_idx(&self) -> &[usize] { &self.col_idx }
     /// Raw value array (length `nnz`).
     pub fn values(&self) -> &[T] { &self.values }
+    /// Consume the matrix and return raw CSR components: (row_ptr, col_idx, values).
+    pub fn into_raw(self) -> (Vec<usize>, Vec<usize>, Vec<T>) {
+        (self.row_ptr, self.col_idx, self.values)
+    }
+
 
     /// Iterate over all `(row, col, value)` triplets in row-major order.
     pub fn triplets(&self) -> impl Iterator<Item = (usize, usize, T)> + '_ {

@@ -22,6 +22,7 @@ use crate::sparse::CsrMatrix;
 ///
 /// Stores separate lower (L) and upper (U) factor rows, each with at most
 /// `p` off-diagonal nonzeros.
+#[derive(Clone)]
 pub struct IlutPrecond<T> {
     nrows:   usize,
     l_rows:  Vec<Vec<(usize, T)>>,  // (col, val), col < row, sorted ascending
