@@ -205,6 +205,10 @@ impl<T: Scalar> BlockGmres<T> {
                                 }
                             }
                         }
+                        // Write the updated column back into the solution matrix.
+                        // Without this, x stays at its initial value (zero) and the solver
+                        // returns a zero solution with a constant residual.
+                        x.set_col(j, &xj);
                     }
                 }
             }
